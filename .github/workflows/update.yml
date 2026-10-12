@@ -1,0 +1,106 @@
+name: Hent boligdata og publiser
+
+on:
+  schedule:
+    # Morgen og ettermiddag norsk tid (UTC i cron)
+    - cron: "15 4 * * *"
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+    inputs:
+      max_details:
+        description: "Maks nye detaljsider denne kjøringen"
+        default: "1500"
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: data-and-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      FETCH: ${{ github.event_name != 'push' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Lagret tilstand (detaljcache, prishistorikk og siste datasett) ligger i grenen «data»
+      - name: Hent lagret tilstand
+        uses: actions/checkout@v5
+        continue-on-error: true
+        with:
+          ref: data
+          path: cache
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Installer Python-pakker
+        run: pip install -r scripts/requirements.txt
+
+      - name: Hent annonser og markedsdata
+        if: env.FETCH == 'true'
+        run: |
+          mkdir -p cache/state cache/public
+          python scripts/fetch_data.py --out public/data --cache cache/state \
+            --max-details "${{ github.event.inputs.max_details || '1500' }}" --time-budget 75
+
+      - name: Lag AI-oppsummering (Gemini)
+        if: env.FETCH == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/ai_brief.py public/data || true
+
+      - name: Bruk forrige datasett (kodeendring uten ny innhenting)
+        if: env.FETCH != 'true'
+        run: |
+          mkdir -p public/data
+          cp cache/public/*.json public/data/ 2>/dev/null || echo "Ingen lagrede data ennå"
+
+      - name: Lagre tilstand i grenen «data»
+        if: env.FETCH == 'true'
+        run: |
+          cp public/data/*.json cache/public/
+          cd cache
+          rm -rf .git
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Data $(date -u +%Y-%m-%dT%H:%M)"
+          git push -q --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Bygg nettsiden
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
