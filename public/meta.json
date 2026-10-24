@@ -1,0 +1,21 @@
+{
+ "updated": "2026-10-24T17:59+00:00",
+ "count": 5188,
+ "lettings": 2653,
+ "withDetails": 4818,
+ "stale": false,
+ "areas": [
+  {
+   "id": "oslo",
+   "name": "Oslo"
+  },
+  {
+   "id": "stavanger",
+   "name": "Stavanger"
+  },
+  {
+   "id": "vestfold",
+   "name": "Vestfold"
+  }
+ ]
+}
